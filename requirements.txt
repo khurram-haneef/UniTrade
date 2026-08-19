@@ -1,0 +1,8 @@
+streamlit>=1.61
+pandas
+pandas-ta
+ccxt
+python-dotenv
+pytz
+cryptography>=42
+psycopg[binary]>=3.2

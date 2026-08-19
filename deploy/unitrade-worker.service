@@ -1,0 +1,19 @@
+[Unit]
+Description=UniTrade persistent trading worker
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=unitrade
+Group=unitrade
+WorkingDirectory=/opt/unitrade
+EnvironmentFile=/etc/unitrade/worker.env
+ExecStart=/opt/unitrade/.venv/bin/python /opt/unitrade/bot_worker.py
+Restart=always
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

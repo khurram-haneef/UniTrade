@@ -1,0 +1,19 @@
+[Unit]
+Description=UniTrade Streamlit dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=unitrade
+Group=unitrade
+WorkingDirectory=/opt/unitrade
+EnvironmentFile=/etc/unitrade/worker.env
+ExecStart=/opt/unitrade/.venv/bin/streamlit run /opt/unitrade/main.py --server.address 127.0.0.1 --server.port 8501
+Restart=always
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
