@@ -176,22 +176,34 @@ def _server_setting(name):
     return value or os.getenv(name)
 
 
+def _as_bool(value, default=False):
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _deliver_otp(user_store, email_service, user_id):
     destination, code = user_store.issue_email_otp(user_id)
     email_service.send_verification_otp(destination, code)
 
 
-def _render_auth_gate(user_store, email_service):
+def _render_auth_gate(user_store, email_service, require_email_verification):
     st.title("UniTrade Account Access")
     st.caption("Each account has separate strategies and encrypted exchange credentials.")
-    login_tab, signup_tab, verify_tab = st.tabs(["Log in", "Create account", "Verify email"])
+    tab_labels = ["Log in", "Create account"]
+    if require_email_verification:
+        tab_labels.append("Verify email")
+    tabs = st.tabs(tab_labels)
+    login_tab, signup_tab = tabs[:2]
     with login_tab:
         with st.form("account_login_form"):
             email = st.text_input("Email", key="login_email")
             password = st.text_input("Password", type="password", key="login_password")
             if st.form_submit_button("Log in", type="primary", use_container_width=True):
                 try:
-                    st.session_state.auth_user = user_store.authenticate(email, password)
+                    st.session_state.auth_user = user_store.authenticate(
+                        email, password, allow_unverified=not require_email_verification,
+                    )
                     st.rerun()
                 except AuthError as exc:
                     st.error(str(exc))
@@ -212,41 +224,47 @@ def _render_auth_gate(user_store, email_service):
             if st.form_submit_button("Create secure account", type="primary", use_container_width=True):
                 if password != confirm:
                     st.error("Passwords do not match.")
-                elif not email_service.configured:
-                    st.error("Account creation is temporarily unavailable because email verification is not configured.")
                 else:
                     try:
-                        user = user_store.create_user(email, password, agreed, full_name, username, mobile_number)
-                        try:
+                        user = user_store.create_user(
+                            email, password, agreed, full_name, username, mobile_number,
+                            require_email_verification=require_email_verification,
+                        )
+                        if require_email_verification:
                             _deliver_otp(user_store, email_service, user["id"])
                             st.success("Account created. A verification code was sent to your email.")
-                        except EmailDeliveryError as exc:
-                            # Do not leave behind an unusable account if SMTP
-                            # goes down after validation.
+                        else:
+                            st.success("Account created. Email verification is disabled on this server; you can log in now.")
+                    except EmailDeliveryError as exc:
+                        try:
                             user_store.delete_user(user["id"], password)
-                            st.error(f"Account was not created because verification email delivery failed: {exc}")
+                        except (AuthError, UnboundLocalError):
+                            pass
+                        st.error(f"Account was not created because verification email delivery failed: {exc}")
                     except AuthError as exc:
                         st.error(str(exc))
-    with verify_tab:
-        st.caption("Enter the 6-digit OTP sent to your email. A code expires after 15 minutes.")
-        with st.form("verify_email_form"):
-            verification_email = st.text_input("Email", key="verify_email")
-            verification_code = st.text_input("Verification code", max_chars=6, key="verify_code")
-            if st.form_submit_button("Verify email", type="primary", use_container_width=True):
-                try:
-                    user_store.verify_email_otp(verification_email, verification_code)
-                    st.success("Email verified. You can now log in.")
-                except AuthError as exc:
-                    st.error(str(exc))
-        with st.form("resend_otp_form"):
-            resend_email = st.text_input("Email for a new code", key="resend_email")
-            if st.form_submit_button("Resend verification code"):
-                try:
-                    destination, code = user_store.resend_email_otp(resend_email)
-                    email_service.send_verification_otp(destination, code)
-                    st.success("A new verification code was sent.")
-                except (AuthError, EmailDeliveryError) as exc:
-                    st.error(str(exc))
+    if require_email_verification:
+        verify_tab = tabs[2]
+        with verify_tab:
+            st.caption("Enter the 6-digit OTP sent to your email. A code expires after 15 minutes.")
+            with st.form("verify_email_form"):
+                verification_email = st.text_input("Email", key="verify_email")
+                verification_code = st.text_input("Verification code", max_chars=6, key="verify_code")
+                if st.form_submit_button("Verify email", type="primary", use_container_width=True):
+                    try:
+                        user_store.verify_email_otp(verification_email, verification_code)
+                        st.success("Email verified. You can now log in.")
+                    except AuthError as exc:
+                        st.error(str(exc))
+            with st.form("resend_otp_form"):
+                resend_email = st.text_input("Email for a new code", key="resend_email")
+                if st.form_submit_button("Resend verification code"):
+                    try:
+                        destination, code = user_store.resend_email_otp(resend_email)
+                        email_service.send_verification_otp(destination, code)
+                        st.success("A new verification code was sent.")
+                    except (AuthError, EmailDeliveryError) as exc:
+                        st.error(str(exc))
 
 
 _default_database_path = os.path.join(os.path.dirname(__file__), "data", "unitrade_users.db")
@@ -254,10 +272,13 @@ _auth_database_path = _server_setting("DATABASE_URL") or _server_setting("UNITRA
 _auth_store = UserStore(_auth_database_path, _server_setting("APP_ENCRYPTION_KEY"))
 _email_service = SmtpEmailService(
     _server_setting("SMTP_HOST"), _server_setting("SMTP_PORT"), _server_setting("SMTP_USERNAME"),
-    _server_setting("SMTP_PASSWORD"), _server_setting("SMTP_FROM"), _server_setting("SMTP_USE_TLS"),
+    _server_setting("SMTP_PASSWORD"), _server_setting("SMTP_SENDER") or _server_setting("SMTP_FROM"), _server_setting("SMTP_USE_TLS"),
 )
+_require_email_verification = _as_bool(_server_setting("REQUIRE_EMAIL_VERIFICATION"), default=False)
+if _require_email_verification and not _email_service.configured:
+    _require_email_verification = False
 if "auth_user" not in st.session_state:
-    _render_auth_gate(_auth_store, _email_service)
+    _render_auth_gate(_auth_store, _email_service, _require_email_verification)
     st.stop()
 
 if _auth_database_path == _default_database_path:

@@ -37,8 +37,10 @@ class SmtpEmailService:
         )
         try:
             with smtplib.SMTP(self.host, self.port, timeout=20) as smtp:
+                smtp.ehlo()
                 if self.use_tls:
                     smtp.starttls()
+                    smtp.ehlo()
                 smtp.login(self.username, self.password)
                 smtp.send_message(message)
         except (OSError, smtplib.SMTPException) as exc:

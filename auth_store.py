@@ -236,7 +236,8 @@ class UserStore:
             raise AuthError("Enter a valid mobile number or leave it blank.")
         return mobile_number
 
-    def create_user(self, email: str, password: str, accepted_agreement: bool, full_name="", username="", mobile_number="", agreement_version="2026-08-18") -> dict:
+    def create_user(self, email: str, password: str, accepted_agreement: bool, full_name="", username="", mobile_number="",
+                    agreement_version="2026-08-18", require_email_verification: bool = True) -> dict:
         email = self._validate_email(email)
         self._validate_password(password)
         username = self._validate_username(username)
@@ -245,28 +246,35 @@ class UserStore:
             raise AuthError("You must accept the trading-risk and API-security agreement.")
         salt = secrets.token_bytes(16)
         now = datetime.now(timezone.utc).isoformat()
+        verified_at = None if require_email_verification else now
         try:
             with self._connection() as conn:
-                query = "INSERT INTO users(email, password_salt, password_hash, agreement_version, agreed_at, created_at, full_name, username, mobile_number) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                query = "INSERT INTO users(email, password_salt, password_hash, agreement_version, agreed_at, created_at, full_name, username, mobile_number, email_verified_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
                 if self.is_postgres:
                     query += " RETURNING id"
                 cursor = conn.execute(
                     query,
-                    (email, salt, self._hash_password(password, salt), agreement_version, now, now, full_name.strip(), username, mobile_number),
+                    (email, salt, self._hash_password(password, salt), agreement_version, now, now, full_name.strip(), username, mobile_number, verified_at),
                 )
                 user_id = cursor.fetchone()["id"] if self.is_postgres else cursor.lastrowid
                 return {"id": user_id, "email": email}
         except self._integrity_error as exc:
             raise AuthError("This email or username is already registered.") from exc
 
-    def authenticate(self, email: str, password: str) -> dict:
+    def authenticate(self, email: str, password: str, allow_unverified: bool = False) -> dict:
         email = self._validate_email(email)
         with self._connection() as conn:
             row = conn.execute("SELECT id, email, password_salt, password_hash, email_verified_at FROM users WHERE email = ?", (email,)).fetchone()
         if row is None or not hmac.compare_digest(self._hash_password(password, row["password_salt"]), row["password_hash"]):
             raise AuthError("Invalid email or password.")
-        if not row["email_verified_at"]:
+        if not row["email_verified_at"] and not allow_unverified:
             raise AuthError("Verify your email with the OTP before logging in.")
+        if not row["email_verified_at"] and allow_unverified:
+            with self._connection() as conn:
+                conn.execute(
+                    "UPDATE users SET email_verified_at = ? WHERE id = ?",
+                    (datetime.now(timezone.utc).isoformat(), row["id"]),
+                )
         return {"id": row["id"], "email": row["email"]}
 
     def get_profile(self, user_id: int) -> dict:
